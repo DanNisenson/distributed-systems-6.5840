@@ -1,38 +1,57 @@
 package mr
 
-import "log"
-import "net"
-import "os"
-import "net/rpc"
-import "net/http"
-
+import (
+	"log"
+	"net"
+	"net/http"
+	"net/rpc"
+	"os"
+	"slices"
+	"strconv"
+	"sync"
+	"time"
+)
 
 type Coordinator struct {
-	// Your definitions here.
-
+	mu      sync.Mutex
+	tasks   []Task
+	nReduce int
 }
 
-// Your code here -- RPC handlers for the worker to call.
+var taskCounter = 1
 
-// an example RPC handler.
-//
-// the RPC argument and reply types are defined in rpc.go.
-func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
-	reply.Y = args.X + 1
+func (c *Coordinator) GetTask(args *GetTaskIn, reply *GetTaskOut) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	idx := slices.IndexFunc(c.tasks, func(t Task) bool {
+		return t.status == TaskStatusPending
+	})
+
+	if idx != -1 {
+		reply.Id = c.tasks[idx].id
+		reply.Filename = c.tasks[idx].filename
+		reply.Type = c.tasks[idx].tType
+		reply.NReduce = c.nReduce
+
+		c.tasks[idx].status = TaskStatusOnGoing
+		c.tasks[idx].workerId = args.WorkerId
+
+		log.Printf("[%s] coordinator taskId=%s workerId=%s status=hand_task",
+			time.Now().Format("15:04:05.000"), c.tasks[idx].id, c.tasks[idx].workerId)
+	}
+
 	return nil
 }
 
+func (c *Coordinator) UpdateTask(args *UpdateTaskIn, reply *GetTaskOut) error {
+	idx := slices.IndexFunc(c.tasks, func(t Task) bool {
+		return t.id == args.TaskId
+	})
 
-// start a thread that listens for RPCs from worker.go
-func (c *Coordinator) server(sockname string) {
-	rpc.Register(c)
-	rpc.HandleHTTP()
-	os.Remove(sockname)
-	l, e := net.Listen("unix", sockname)
-	if e != nil {
-		log.Fatalf("listen error %s: %v", sockname, e)
-	}
-	go http.Serve(l, nil)
+	c.tasks[idx].status = args.Status
+
+	return nil
 }
 
 // main/mrcoordinator.go calls Done() periodically to find out
@@ -42,7 +61,6 @@ func (c *Coordinator) Done() bool {
 
 	// Your code here.
 
-
 	return ret
 }
 
@@ -50,11 +68,45 @@ func (c *Coordinator) Done() bool {
 // main/mrcoordinator.go calls this function.
 // nReduce is the number of reduce tasks to use.
 func MakeCoordinator(sockname string, files []string, nReduce int) *Coordinator {
-	c := Coordinator{}
+	c := Coordinator{
+		nReduce: nReduce,
+	}
 
-	// Your code here.
-
-
+	c.createTasks(files)
 	c.server(sockname)
+
 	return &c
+}
+
+// create list of tasks from filenames
+func (c *Coordinator) createTasks(files []string) {
+	c.tasks = []Task{}
+
+	for _, filename := range files {
+		task := Task{
+			id:       strconv.Itoa(taskCounter),
+			filename: filename,
+			tType:    TaskTypeMap,
+			status:   TaskStatusPending,
+		}
+
+		c.tasks = append(c.tasks, task)
+		taskCounter += 1
+	}
+}
+
+// start a thread that listens for RPCs from worker.go
+func (c *Coordinator) server(sockname string) {
+	rpc.Register(c)
+	rpc.HandleHTTP()
+	os.Remove(sockname)
+	l, e := net.Listen("unix", sockname)
+
+	log.Printf("[%s] coordinator socket=%s status=listening",
+		time.Now().Format("15:04:05.000"), sockname)
+
+	if e != nil {
+		log.Fatalf("listen error %s: %v", sockname, e)
+	}
+	go http.Serve(l, nil)
 }
