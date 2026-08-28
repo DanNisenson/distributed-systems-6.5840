@@ -9,7 +9,9 @@ import (
 	"math/rand"
 	"net/rpc"
 	"os"
+	"path/filepath"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -32,15 +34,17 @@ var (
 	coordSockName string // socket for coordinator
 	workerId      string
 	mapfn         func(string, string) []KeyValue
+	reducefn      func(string, []string) string
 )
 
 // main/mrworker.go calls this function.
 func Worker(sockname string, mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
-	coordSockName = sockname
 	workerId = generateId(10)
+	coordSockName = sockname
 	mapfn = mapf
+	reducefn = reducef
 
 	run()
 }
@@ -48,32 +52,91 @@ func Worker(sockname string, mapf func(string, string) []KeyValue,
 func run() {
 	task := getTask()
 
-	// exit worker if no task is available: assume job done
-	if task.Filename == "" {
+	switch task.Type {
+
+	// poll coordinator
+	case TaskTypeWait:
+		log.Printf("[%s] worker=%s status=wait",
+			time.Now().Format("15:04:05.000"), workerId)
+		time.Sleep(1 * time.Second)
+		run()
+
+	// exit program
+	case TaskTypeExit:
 		log.Printf("[%s] worker=%s status=exit",
 			time.Now().Format("15:04:05.000"), workerId)
 		os.Exit(0)
-	} else {
-		log.Printf("[%s] worker=%s task=%s type=%s file=%s status=assigned",
-			time.Now().Format("15:04:05.000"), workerId, task.Id, task.Type, task.Filename)
-	}
-
-	start := time.Now()
-	content, err := readFile(task.Filename)
-	if err != nil {
-		// ... handle error
-	} else {
-		log.Printf("[%s] worker=%s task=%s type=%s file=%s elapsed=%d status=file_read",
-			time.Now().Format("15:04:05.000"), workerId, task.Id, task.Type, task.Filename, time.Since(start).Milliseconds())
 	}
 
 	switch task.Type {
+
 	case TaskTypeMap:
-		result := mapfn(task.Filename, content)
+		start := time.Now()
+		content, err := readFile(task.Input)
+		if err != nil {
+			// ... handle error
+		} else {
+			log.Printf("[%s] worker=%s task=%s type=%s file=%s elapsed=%d status=file_read",
+				time.Now().Format("15:04:05.000"), workerId, task.Id, task.Type, task.Input, time.Since(start).Milliseconds())
+		}
+		result := mapfn(task.Input, string(content))
 		handleMapResult(result, task.Id, task.NReduce)
+
 	case TaskTypeReduce:
-		println("REDUCE")
+		matches, err := filepath.Glob("./" + task.Input)
+		if err != nil {
+			log.Fatalf("[%s] worker=%s task=%s type=%s file=%s reason=%s status=FATAL_ERROR",
+				time.Now().Format("15:04:05.000"), workerId, task.Id, task.Type, task.Input, err)
+			return
+		}
+
+		log.Printf("[%s] worker=%s task=%s type=%s files=%s status=reading_buckets",
+			time.Now().Format("15:04:05.000"), workerId, task.Id, task.Type, task.Input)
+
+		var kvs []KeyValue
+		for _, filename := range matches {
+			bytes, err := readFile(filename)
+			if err != nil {
+				log.Fatalf("[%s] worker=%s task=%s type=%s file=%s reason=%s status=FATAL_ERROR",
+					time.Now().Format("15:04:05.000"), workerId, task.Id, task.Type, task.Input, err)
+				return
+			}
+			var content []KeyValue
+			json.Unmarshal(bytes, &content)
+			kvs = append(kvs, content...)
+		}
+
+		log.Printf("[%s] worker=%s task=%s type=%s status=grouping",
+			time.Now().Format("15:04:05.000"), workerId, task.Id, task.Type)
+
+		// map[Key][]Value
+		groups := make(map[string][]string)
+		for _, kv := range kvs {
+			if groups[kv.Key] != nil {
+				groups[kv.Key] = append(groups[kv.Key], kv.Value)
+			} else {
+				groups[kv.Key] = []string{kv.Value}
+			}
+		}
+
+		log.Printf("[%s] worker=%s task=%s type=%s status=run_reduce",
+			time.Now().Format("15:04:05.000"), workerId, task.Id, task.Type)
+
+		var output []byte
+		for key, values := range groups {
+			result := reducefn(key, values)
+			formatted := fmt.Sprintf("%v %v\n", key, result)
+			output = append(output, formatted...)
+		}
+
+		log.Printf("[%s] worker=%s task=%s type=%s status=writing_output",
+			time.Now().Format("15:04:05.000"), workerId, task.Id, task.Type)
+
+		writeFile(output, "mr-out-"+strconv.Itoa(task.Idx))
 	}
+
+	markAsDone(task.Id)
+	run()
 }
 
 func getTask() GetTaskOut {
@@ -83,7 +146,7 @@ func getTask() GetTaskOut {
 
 	ok := call("Coordinator.GetTask", &args, &reply)
 	if ok == false {
-		fmt.Printf("call failed!\n")
+		fmt.Printf("Coordinator.GetTask failed!\n")
 	}
 
 	return reply
@@ -107,9 +170,6 @@ func handleMapResult(result []KeyValue, taskId string, nBuckets int) error {
 	if err != nil {
 		log.Fatalf("cannot write to disk")
 	}
-
-	markAsDone(taskId)
-	run()
 
 	return nil
 }
@@ -147,26 +207,26 @@ func writeBucketsToDisk(taskId string, buckets [][]KeyValue) error {
 		}
 	}
 
-	log.Printf("[%s] worker=%s task=%s type=map elapsed=%d status=write_to_disk",
+	log.Printf("[%s] worker=%s task=%s type=map elapsed=%d status=write_bucket",
 		time.Now().Format("15:04:05.000"), workerId, taskId, time.Since(start).Milliseconds())
 
 	return nil
 }
 
-func readFile(filename string) (string, error) {
+func readFile(filename string) ([]byte, error) {
 	file, err := os.Open(filename)
 	if err != nil {
 		log.Fatalf("cannot open %v", filename)
-		return "", err
+		return nil, err
 	}
 	content, err := io.ReadAll(file)
 	if err != nil {
 		log.Fatalf("cannot read %v", filename)
-		return "", err
+		return nil, err
 	}
 	file.Close()
 
-	return string(content), nil
+	return content, nil
 }
 
 func writeFile(content []byte, filename string) error {
@@ -199,14 +259,14 @@ func markAsDone(taskId string) {
 	args.WorkerId = workerId
 	args.TaskId = taskId
 	args.Status = TaskStatusDone
-	reply := GetTaskOut{}
+	reply := UpdateTaskOut{}
 
 	ok := call("Coordinator.UpdateTask", &args, &reply)
 	if ok {
 		log.Printf("[%s] worker=%s task=%s type=map status=done_ack",
 			time.Now().Format("15:04:05.000"), workerId, taskId)
 	} else {
-		fmt.Printf("call failed!\n")
+		fmt.Printf("Coordinator.UpdateTask failed!\n")
 	}
 }
 

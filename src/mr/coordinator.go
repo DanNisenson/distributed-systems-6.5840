@@ -1,55 +1,141 @@
+
 package mr
 
 import (
+	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"net/rpc"
 	"os"
-	"slices"
 	"strconv"
 	"sync"
 	"time"
 )
 
+// Task ID generator
+
+type TaskId struct {
+	taskCounter int
+}
+
+func (t *TaskId) get() string {
+	t.taskCounter++
+	return strconv.Itoa(t.taskCounter)
+}
+
+var taskId = TaskId{taskCounter: 0}
+
+// System coordinator
+
+type Task struct {
+	id       string
+	input    string
+	tType    TaskType
+	status   TaskStatus
+	workerId string
+	idx      int
+}
+
+type JobPhase string
+
+const (
+	JobPhaseMap    JobPhase = "map"
+	JobPhaseReduce JobPhase = "reduce"
+	JobPhaseDone   JobPhase = "done"
+)
+
 type Coordinator struct {
 	mu      sync.Mutex
+	phase   JobPhase
 	tasks   []Task
 	nReduce int
 }
 
-var taskCounter = 1
+// create a Coordinator.
+// main/mrcoordinator.go calls this function.
+// nReduce is the number of reduce tasks to use.
+func MakeCoordinator(sockname string, files []string, nReduce int) *Coordinator {
+	c := Coordinator{
+		nReduce: nReduce,
+	}
+
+	c.createTasks(files, nReduce)
+	c.server(sockname)
+	c.phase = JobPhaseMap
+
+	return &c
+}
 
 func (c *Coordinator) GetTask(args *GetTaskIn, reply *GetTaskOut) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	idx := slices.IndexFunc(c.tasks, func(t Task) bool {
-		return t.status == TaskStatusPending
-	})
-
-	if idx != -1 {
-		reply.Id = c.tasks[idx].id
-		reply.Filename = c.tasks[idx].filename
-		reply.Type = c.tasks[idx].tType
-		reply.NReduce = c.nReduce
-
-		c.tasks[idx].status = TaskStatusOnGoing
-		c.tasks[idx].workerId = args.WorkerId
-
-		log.Printf("[%s] coordinator taskId=%s workerId=%s status=hand_task",
-			time.Now().Format("15:04:05.000"), c.tasks[idx].id, c.tasks[idx].workerId)
+	if c.phase == JobPhaseDone {
+		reply.Id = taskId.get()
+		reply.Type = TaskTypeExit
+		return nil
 	}
+
+	idx := c.findPendingTask()
+
+	if idx == -1 {
+		reply.Id = taskId.get()
+		reply.Type = TaskTypeWait
+
+		return nil
+	}
+
+	// pointer to allow task update
+	task := &c.tasks[idx]
+
+	// set reply
+	reply.Id = task.id
+	reply.Input = task.input
+	reply.Type = task.tType
+	reply.Idx = task.idx
+	reply.NReduce = c.nReduce
+
+	// update task
+	task.status = TaskStatusOnGoing
+	task.workerId = args.WorkerId
+
+	log.Printf("[%s] coordinator taskId=%s workerId=%s status=hand_task",
+		time.Now().Format("15:04:05.000"), task.id, task.workerId)
 
 	return nil
 }
 
-func (c *Coordinator) UpdateTask(args *UpdateTaskIn, reply *GetTaskOut) error {
-	idx := slices.IndexFunc(c.tasks, func(t Task) bool {
-		return t.id == args.TaskId
-	})
+func (c *Coordinator) UpdateTask(args *UpdateTaskIn, reply *UpdateTaskOut) error {
 
-	c.tasks[idx].status = args.Status
+	mapDone := true
+	reduceDone := true
+
+	for i := range c.tasks {
+		// point to struct instead of copying
+		task := &c.tasks[i]
+
+		// update task status
+		if task.id == args.TaskId {
+			c.tasks[i].status = args.Status
+		}
+
+		// compute job phase
+		if task.tType == TaskTypeMap && task.status != TaskStatusDone {
+			mapDone = false
+		} else if task.tType == TaskTypeReduce && task.status != TaskStatusDone {
+			reduceDone = false
+		}
+	}
+
+	// update job phase
+	if mapDone == true && reduceDone == false {
+		c.phase = JobPhaseReduce
+	} else if mapDone == true && reduceDone == true {
+		c.phase = JobPhaseDone
+	}
+
+	reply.Success = true
 
 	return nil
 }
@@ -64,35 +150,31 @@ func (c *Coordinator) Done() bool {
 	return ret
 }
 
-// create a Coordinator.
-// main/mrcoordinator.go calls this function.
-// nReduce is the number of reduce tasks to use.
-func MakeCoordinator(sockname string, files []string, nReduce int) *Coordinator {
-	c := Coordinator{
-		nReduce: nReduce,
-	}
-
-	c.createTasks(files)
-	c.server(sockname)
-
-	return &c
-}
-
 // create list of tasks from filenames
-func (c *Coordinator) createTasks(files []string) {
+func (c *Coordinator) createTasks(files []string, nReduce int) {
 	c.tasks = []Task{}
 
 	for _, filename := range files {
 		task := Task{
-			id:       strconv.Itoa(taskCounter),
-			filename: filename,
-			tType:    TaskTypeMap,
-			status:   TaskStatusPending,
+			id:     taskId.get(),
+			input:  filename,
+			tType:  TaskTypeMap,
+			status: TaskStatusPending,
 		}
-
 		c.tasks = append(c.tasks, task)
-		taskCounter += 1
 	}
+
+	for i := range nReduce {
+		task := Task{
+			id:     taskId.get(),
+			idx:    i,
+			input:  fmt.Sprintf("mr-*-%d.json", i),
+			tType:  TaskTypeReduce,
+			status: TaskStatusPending,
+		}
+		c.tasks = append(c.tasks, task)
+	}
+
 }
 
 // start a thread that listens for RPCs from worker.go
@@ -109,4 +191,19 @@ func (c *Coordinator) server(sockname string) {
 		log.Fatalf("listen error %s: %v", sockname, e)
 	}
 	go http.Serve(l, nil)
+}
+
+func (c *Coordinator) findPendingTask() int {
+
+	tType := TaskTypeMap
+	if c.phase == JobPhaseReduce {
+		tType = TaskTypeReduce
+	}
+
+	for i, task := range c.tasks {
+		if task.tType == tType && task.status == TaskStatusPending {
+			return i
+		}
+	}
+	return -1
 }
