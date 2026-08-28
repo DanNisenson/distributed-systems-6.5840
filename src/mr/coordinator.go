@@ -106,6 +106,8 @@ func (c *Coordinator) GetTask(args *GetTaskIn, reply *GetTaskOut) error {
 }
 
 func (c *Coordinator) UpdateTask(args *UpdateTaskIn, reply *UpdateTaskOut) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
 	mapDone := true
 	reduceDone := true
@@ -142,6 +144,8 @@ func (c *Coordinator) UpdateTask(args *UpdateTaskIn, reply *UpdateTaskOut) error
 // main/mrcoordinator.go calls Done() periodically to find out
 // if the entire job has finished.
 func (c *Coordinator) Done() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	return c.phase == JobPhaseDone
 }
 
