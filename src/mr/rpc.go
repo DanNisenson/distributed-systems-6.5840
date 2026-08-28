@@ -1,6 +1,4 @@
-
 package mr
-
 
 type TaskType string
 
@@ -18,6 +16,14 @@ const (
 	TaskStatusOnGoing TaskStatus = "ongoing"
 	TaskStatusDone    TaskStatus = "done"
 )
+
+type PingIn struct {
+	WorkerId string
+}
+
+type PingOut struct {
+	Success bool
+}
 
 type GetTaskIn struct {
 	WorkerId string
@@ -40,4 +46,3 @@ type UpdateTaskIn struct {
 type UpdateTaskOut struct {
 	Success bool
 }
-

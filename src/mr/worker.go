@@ -39,25 +39,42 @@ func Worker(sockname string, mapf func(string, string) []KeyValue,
 		reducefn:      reducef,
 	}
 
+	w.logger = NewLogger()
+	w.logger.AddDefault("worker", w.workerId)
+
+	go func() {
+		for {
+			w.pingCoordinator()
+			time.Sleep(4 * time.Second)
+		}
+	}()
+
 	w.run()
 }
 
+func (w *worker) pingCoordinator() {
+	args := PingIn{WorkerId: w.workerId}
+	reply := PingOut{}
+
+	w.call("Coordinator.Ping", &args, &reply)
+}
+
 func (w *worker) run() {
-	w.logger = NewLogger()
-	w.logger.AddDefault("worker", w.workerId)
 
 	task := w.getTask()
 
 	w.logger.AddDefault("task", task.Id)
 	w.logger.AddDefault("type", task.Type)
 
+	w.logger.Info("status", "got_task")
+
 	switch task.Type {
 	case TaskTypeExit:
-		w.logger.Info("status", "exit")
+		w.logger.Debug("status", "exit")
 		os.Exit(0)
 	case TaskTypeWait:
-		w.logger.Info("status", "wait")
-		time.Sleep(1 * time.Second)
+		w.logger.Debug("status", "wait")
+		time.Sleep(3 * time.Second)
 		w.run()
 	case TaskTypeMap:
 		w.execMap(task)
@@ -85,11 +102,11 @@ func (w *worker) getTask() GetTaskOut {
 func (w *worker) execMap(task GetTaskOut) {
 	content, err := w.readFile(task.Input)
 	if err != nil {
-		w.logger.Error("status", "FATAL", "reason", err)
+		w.logger.Error("!!status", "FATAL", "reason", err)
 		return
 	}
 
-	w.logger.Info("status", "file_read")
+	w.logger.Debug("status", "file_read")
 
 	intermediate := w.mapfn(task.Input, string(content))
 
@@ -149,7 +166,7 @@ func (w *worker) writeBucketsToDisk(taskId string, buckets [][]KeyValue) error {
 		}
 	}
 
-	w.logger.Info("status", "write_bucket", "elapsed", time.Since(start).Milliseconds())
+	w.logger.Debug("status", "write_bucket", "elapsed", time.Since(start).Milliseconds())
 
 	return nil
 }
@@ -160,20 +177,20 @@ func (w *worker) execReduce(task GetTaskOut) {
 		w.logger.Error("status", "FATAL", "reason", err)
 		return
 	}
-	w.logger.Info("status", "reading_buckets")
+	w.logger.Debug("status", "reading_buckets")
 
 	kvs, err := w.readReduceInputFiles(filenames)
 	if err != nil {
 		w.logger.Error("status", "FATAL", "reason", err)
 		return
 	}
-	w.logger.Info("status", "grouping")
+	w.logger.Debug("status", "grouping")
 
 	byKey := w.groupValuesByKey(kvs)
-	w.logger.Info("status", "run_reduce")
+	w.logger.Debug("status", "run_reduce")
 
 	output := w.reduceValuesByKey(byKey)
-	w.logger.Info("status", "writing_output")
+	w.logger.Debug("status", "writing_output")
 
 	w.writeFile(output, "mr-out-"+strconv.Itoa(task.Idx))
 
@@ -289,13 +306,16 @@ func (w *worker) call(rpcname string, args interface{}, reply interface{}) bool 
 	// c, err := rpc.DialHTTP("tcp", "127.0.0.1"+":1234")
 	c, err := rpc.DialHTTP("unix", w.coordSockName)
 	if err != nil {
-		w.logger.Error("status", "FATAL", "reason", err)
+		// we assume the job is done
+		w.logger.Info("status", "EXIT", "reason", "can't connect to coordinator server")
+		os.Exit(0)
 	}
 	defer c.Close()
 
 	if err := c.Call(rpcname, args, reply); err == nil {
 		return true
 	}
+	w.logger.Error("status", "CALL FAILED", "args", fmt.Sprintf("%+v", args))
 	log.Printf("%d: call failed err %v", os.Getpid(), err)
 	return false
 }

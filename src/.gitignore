@@ -16,9 +16,12 @@ mrtmp.*
 /main/kvraft1d
 /main/shardgrp1d
 
+
+app.log
 # MR intermediate files
 mr-*.json
 # MR output files
 mr-out-*
 # MR tests tmp files
 mr-tmp-*/
+mr-*.txt

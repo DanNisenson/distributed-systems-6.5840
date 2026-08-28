@@ -1,6 +1,7 @@
 sock=sock123
-n_workers=5
-app=wc
+n_workers=10
+app=crash
+# app=wc
 # app=indexer
 
 rm mr-*.json tmp* $sock

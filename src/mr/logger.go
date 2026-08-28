@@ -3,6 +3,7 @@ package mr
 import (
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"time"
 )
@@ -18,6 +19,10 @@ func NewLogger() *Logger {
 	return &l
 }
 
+func (l *Logger) Debug(kvs ...any) {
+	l.print("DEBUG", kvs...)
+}
+
 func (l *Logger) Info(kvs ...any) {
 	l.print("INFO", kvs...)
 }
@@ -27,10 +32,25 @@ func (l *Logger) Error(kvs ...any) {
 }
 
 func (l *Logger) AddDefault(k string, v any) {
-	l.defaults = append(l.defaults, k, v)
+	if len(l.defaults) == 0 {
+		l.defaults = append(l.defaults, k, v)
+	}
+
+	for i := 0; i < len(l.defaults); i += 2 {
+		if l.defaults[i] == k {
+			l.defaults[i+1] = v
+		} else {
+			l.defaults = append(l.defaults, k, v)
+		}
+	}
+
 }
 
 func (l *Logger) print(level string, kvs ...any) {
+
+	if level == "DEBUG" {
+		return
+	}
 
 	var buf strings.Builder
 	buf.WriteString(fmt.Sprintf("[%s] [%s]", time.Now().Format("15:04:05.000"), level))
@@ -43,5 +63,12 @@ func (l *Logger) print(level string, kvs ...any) {
 		buf.WriteString(fmt.Sprintf(" %v=%v", l.defaults[i], l.defaults[i+1]))
 	}
 
-	log.Println(buf.String())
+	f, err := os.OpenFile("app.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer f.Close()
+	if _, err := f.WriteString(buf.String() + "\n"); err != nil {
+		log.Printf("failed to write log: %v", err)
+	}
 }
