@@ -1,0 +1,35 @@
+*.*/
+main/mr-tmp/
+mrtmp.*
+824-mrinput-*.txt
+/main/diff.out
+/mapreduce/x.txt
+/pbservice/x.txt
+/kvpaxos/x.txt
+*.so
+mrcoordinator
+mrsequential
+mrworker
+kvsrv1d
+raft1d
+rsm1d
+kvraft1d
+shardgrp1d
+crash.so
+early_exit.so
+indexer.so
+jobcount.so
+mtiming.so
+nocrash.so
+rtiming.so
+wc.so
+
+
+app.log
+# MR intermediate files
+mr-*.json
+# MR output files
+mr-out-*
+# MR tests tmp files
+mr-tmp-*/
+mr-*.txt

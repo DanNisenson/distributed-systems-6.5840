@@ -1,48 +1,22 @@
 package mr
 
-type TaskType string
+//
+// RPC definitions.
+//
+// remember to capitalize all names.
+//
 
-const (
-	TaskTypeMap    TaskType = "map"
-	TaskTypeReduce TaskType = "reduce"
-	TaskTypeWait   TaskType = "wait"
-	TaskTypeExit   TaskType = "exit"
-)
+//
+// example to show how to declare the arguments
+// and reply for an RPC.
+//
 
-type TaskStatus string
-
-const (
-	TaskStatusPending TaskStatus = "pending"
-	TaskStatusOnGoing TaskStatus = "ongoing"
-	TaskStatusDone    TaskStatus = "done"
-)
-
-type PingIn struct {
-	WorkerId string
+type ExampleArgs struct {
+	X int
 }
 
-type PingOut struct {
-	Success bool
+type ExampleReply struct {
+	Y int
 }
 
-type GetTaskIn struct {
-	WorkerId string
-}
-
-type GetTaskOut struct {
-	Id      string
-	Input   string
-	Type    TaskType
-	NReduce int
-	Idx     int
-}
-
-type UpdateTaskIn struct {
-	WorkerId string
-	TaskId   string
-	Status   TaskStatus
-}
-
-type UpdateTaskOut struct {
-	Success bool
-}
+// Add your RPC definitions here.
