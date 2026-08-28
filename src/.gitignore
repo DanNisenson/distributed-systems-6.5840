@@ -15,3 +15,6 @@ mrtmp.*
 /main/rsm1d
 /main/kvraft1d
 /main/shardgrp1d
+
+mr-*.json
+mr-out-*
