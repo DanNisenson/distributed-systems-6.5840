@@ -142,11 +142,7 @@ func (c *Coordinator) UpdateTask(args *UpdateTaskIn, reply *UpdateTaskOut) error
 // main/mrcoordinator.go calls Done() periodically to find out
 // if the entire job has finished.
 func (c *Coordinator) Done() bool {
-	ret := false
-
-	// Your code here.
-
-	return ret
+	return c.phase == JobPhaseDone
 }
 
 // create list of tasks from filenames
