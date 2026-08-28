@@ -1,16 +1,13 @@
-
 package mr
 
 import (
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"net/rpc"
 	"os"
 	"strconv"
 	"sync"
-	"time"
 )
 
 // Task ID generator
@@ -50,6 +47,7 @@ type Coordinator struct {
 	phase   JobPhase
 	tasks   []Task
 	nReduce int
+	logger  *Logger
 }
 
 // create a Coordinator.
@@ -59,6 +57,9 @@ func MakeCoordinator(sockname string, files []string, nReduce int) *Coordinator 
 	c := Coordinator{
 		nReduce: nReduce,
 	}
+
+	c.logger = NewLogger()
+	c.logger.AddDefault("coordinator", true)
 
 	c.createTasks(files, nReduce)
 	c.server(sockname)
@@ -82,7 +83,6 @@ func (c *Coordinator) GetTask(args *GetTaskIn, reply *GetTaskOut) error {
 	if idx == -1 {
 		reply.Id = taskId.get()
 		reply.Type = TaskTypeWait
-
 		return nil
 	}
 
@@ -100,8 +100,7 @@ func (c *Coordinator) GetTask(args *GetTaskIn, reply *GetTaskOut) error {
 	task.status = TaskStatusOnGoing
 	task.workerId = args.WorkerId
 
-	log.Printf("[%s] coordinator taskId=%s workerId=%s status=hand_task",
-		time.Now().Format("15:04:05.000"), task.id, task.workerId)
+	c.logger.Info("status", "hand_task", "taskId", task.id, "workerId", task.workerId)
 
 	return nil
 }
@@ -184,11 +183,10 @@ func (c *Coordinator) server(sockname string) {
 	os.Remove(sockname)
 	l, e := net.Listen("unix", sockname)
 
-	log.Printf("[%s] coordinator socket=%s status=listening",
-		time.Now().Format("15:04:05.000"), sockname)
+	c.logger.Info("status", "listening", "socket", sockname)
 
 	if e != nil {
-		log.Fatalf("listen error %s: %v", sockname, e)
+		c.logger.Error("status", "FATAL", "reason", e)
 	}
 	go http.Serve(l, nil)
 }
